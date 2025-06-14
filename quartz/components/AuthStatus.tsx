@@ -139,12 +139,71 @@ AuthStatus.afterDOMLoaded = `
 // Authentication management for Azure Static Web Apps
 let currentUser = null;
 let isAuthenticated = false;
+let userEncryptionKey = null;
 
 // UI Elements
 const userInfo = document.getElementById('userInfo');
 const loginBtn = document.getElementById('loginBtn');
 const logoutBtn = document.getElementById('logoutBtn');
 const authStatus = document.getElementById('authStatus');
+
+// Encryption key derivation
+async function deriveUserEncryptionKey(user) {
+  if (!user || !user.userId) {
+    console.warn('Cannot derive encryption key: no user ID available');
+    return null;
+  }
+  
+  try {
+    // Use user ID as primary input for key derivation
+    const encoder = new TextEncoder();
+    const userIdBuffer = encoder.encode(user.userId);
+    
+    // Add a constant salt for additional security
+    const salt = encoder.encode('azure-ad-encryption-salt-v1');
+    
+    // Import the user ID as key material
+    const keyMaterial = await crypto.subtle.importKey(
+      'raw',
+      userIdBuffer,
+      { name: 'PBKDF2' },
+      false,
+      ['deriveBits', 'deriveKey']
+    );
+    
+    // Derive a strong encryption key
+    const derivedKey = await crypto.subtle.deriveKey(
+      {
+        name: 'PBKDF2',
+        salt: salt,
+        iterations: 100000,
+        hash: 'SHA-256'
+      },
+      keyMaterial,
+      { name: 'AES-CBC', length: 256 },
+      true, // Allow export for localStorage
+      ['encrypt', 'decrypt']
+    );
+    
+    // Export key for use in EncryptedContent component
+    const exportedKey = await crypto.subtle.exportKey('raw', derivedKey);
+    const keyBase64 = btoa(String.fromCharCode.apply(null, new Uint8Array(exportedKey)));
+    
+    console.log('✅ User encryption key derived from Azure AD identity');
+    return keyBase64;
+    
+  } catch (error) {
+    console.error('Error deriving encryption key:', error);
+    return null;
+  }
+}
+
+function clearUserEncryptionKey() {
+  userEncryptionKey = null;
+  localStorage.removeItem('azure-ad-encryption-key');
+  localStorage.removeItem('knowledge-base-key'); // Clear legacy key
+  console.log('🔐 User encryption keys cleared');
+}
 
 // Check authentication status
 async function checkAuthStatus() {
@@ -163,13 +222,22 @@ async function checkAuthStatus() {
     if (clientPrincipal) {
       currentUser = clientPrincipal;
       isAuthenticated = true;
+      
+      // Derive encryption key from user identity
+      userEncryptionKey = await deriveUserEncryptionKey(clientPrincipal);
+      if (userEncryptionKey) {
+        localStorage.setItem('azure-ad-encryption-key', userEncryptionKey);
+      }
+      
       displayAuthenticatedState();
     } else {
       isAuthenticated = false;
+      clearUserEncryptionKey();
       displayUnauthenticatedState();
     }
   } catch (error) {
     console.error('Error checking auth status:', error);
+    clearUserEncryptionKey();
     displayUnauthenticatedState();
   }
 }
@@ -179,11 +247,14 @@ function displayAuthenticatedState() {
     authStatus.className = 'auth-status authenticated';
   }
   
+  const encryptionStatus = userEncryptionKey ? '🔓 Encryption Ready' : '⚠️ Encryption Unavailable';
+  
   if (userInfo) {
     userInfo.innerHTML = \`
       <p><strong>✅ Authenticated</strong></p>
       <p>Welcome, \${currentUser.userDetails || 'User'}!</p>
       <p>Provider: \${currentUser.identityProvider}</p>
+      <p><small>\${encryptionStatus}</small></p>
     \`;
   }
   
@@ -224,6 +295,8 @@ if (loginBtn) {
 
 if (logoutBtn) {
   logoutBtn.addEventListener('click', function() {
+    // Clear encryption keys before logout
+    clearUserEncryptionKey();
     window.location.href = '/.auth/logout';
   });
 }
