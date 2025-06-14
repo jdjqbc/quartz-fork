@@ -147,53 +147,49 @@ const loginBtn = document.getElementById('loginBtn');
 const logoutBtn = document.getElementById('logoutBtn');
 const authStatus = document.getElementById('authStatus');
 
-// Encryption key derivation
-async function deriveUserEncryptionKey(user) {
+// Fetch master encryption key from Azure Key Vault
+async function fetchMasterEncryptionKey(user) {
   if (!user || !user.userId) {
-    console.warn('Cannot derive encryption key: no user ID available');
+    console.warn('Cannot fetch encryption key: no user available');
     return null;
   }
   
   try {
-    // Use user ID as primary input for key derivation
-    const encoder = new TextEncoder();
-    const userIdBuffer = encoder.encode(user.userId);
+    console.log('🔑 Fetching master encryption key from Azure Key Vault...');
     
-    // Add a constant salt for additional security
-    const salt = encoder.encode('azure-ad-encryption-salt-v1');
-    
-    // Import the user ID as key material
-    const keyMaterial = await crypto.subtle.importKey(
-      'raw',
-      userIdBuffer,
-      { name: 'PBKDF2' },
-      false,
-      ['deriveBits', 'deriveKey']
-    );
-    
-    // Derive a strong encryption key
-    const derivedKey = await crypto.subtle.deriveKey(
-      {
-        name: 'PBKDF2',
-        salt: salt,
-        iterations: 100000,
-        hash: 'SHA-256'
+    const response = await fetch('/api/get-encryption-key', {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
       },
-      keyMaterial,
-      { name: 'AES-CBC', length: 256 },
-      true, // Allow export for localStorage
-      ['encrypt', 'decrypt']
-    );
+      credentials: 'include' // Include authentication cookies
+    });
     
-    // Export key for use in EncryptedContent component
-    const exportedKey = await crypto.subtle.exportKey('raw', derivedKey);
-    const keyBase64 = btoa(String.fromCharCode.apply(null, new Uint8Array(exportedKey)));
+    if (!response.ok) {
+      if (response.status === 401) {
+        console.warn('Authentication required for encryption key access');
+        return null;
+      } else if (response.status === 403) {
+        console.warn('Access denied to encryption key');
+        return null;
+      } else {
+        throw new Error(\`HTTP \${response.status}: \${response.statusText}\`);
+      }
+    }
     
-    console.log('✅ User encryption key derived from Azure AD identity');
-    return keyBase64;
+    const data = await response.json();
+    
+    if (!data.success || !data.encryptionKey) {
+      throw new Error('Invalid response format from key service');
+    }
+    
+    console.log('✅ Master encryption key retrieved from Azure Key Vault');
+    console.log(\`🔐 Key ID: \${data.keyId}\`);
+    
+    return data.encryptionKey;
     
   } catch (error) {
-    console.error('Error deriving encryption key:', error);
+    console.error('Error fetching master encryption key:', error);
     return null;
   }
 }
@@ -202,7 +198,7 @@ function clearUserEncryptionKey() {
   userEncryptionKey = null;
   localStorage.removeItem('azure-ad-encryption-key');
   localStorage.removeItem('knowledge-base-key'); // Clear legacy key
-  console.log('🔐 User encryption keys cleared');
+  console.log('🔐 User encryption key cleared');
 }
 
 // Check authentication status
@@ -223,8 +219,8 @@ async function checkAuthStatus() {
       currentUser = clientPrincipal;
       isAuthenticated = true;
       
-      // Derive encryption key from user identity
-      userEncryptionKey = await deriveUserEncryptionKey(clientPrincipal);
+      // Fetch master encryption key from Azure Key Vault
+      userEncryptionKey = await fetchMasterEncryptionKey(clientPrincipal);
       if (userEncryptionKey) {
         localStorage.setItem('azure-ad-encryption-key', userEncryptionKey);
       }
