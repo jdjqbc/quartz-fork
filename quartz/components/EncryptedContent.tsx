@@ -43,10 +43,10 @@ const EncryptedContent: QuartzComponent = ({ fileData, cfg, tree }: QuartzCompon
       let decrypted: string
       
       if (isSOPSEncrypted) {
-        // Handle SOPS encrypted content with raw key
-        decrypted = await clientSideDecryptWithKey(fileData.text || "", keyBase64)
+        // Handle SOPS encrypted content with master key
+        decrypted = await clientSideDecryptWithMasterKey(fileData.text || "", keyBase64)
       } else if (isFrontmatterEncrypted) {
-        // For frontmatter encryption, render content normally for authenticated users
+        // For frontmatter encryption, render content normally for authenticated users with master key
         decrypted = htmlToJsx(fileData.filePath!, tree) as string
       } else {
         throw new Error("Content is not encrypted")
@@ -56,7 +56,7 @@ const EncryptedContent: QuartzComponent = ({ fileData, cfg, tree }: QuartzCompon
       setIsDecrypted(true)
       
     } catch (err) {
-      console.error("Azure AD key decryption failed, falling back to password:", err)
+      console.error("Master key decryption failed, falling back to password:", err)
       // Don't set error - fall back to password prompt
       setIsLoading(false)
     } finally {
@@ -116,6 +116,94 @@ const EncryptedContent: QuartzComponent = ({ fileData, cfg, tree }: QuartzCompon
     if (typeof window !== "undefined") {
       localStorage.removeItem("knowledge-base-key")
       localStorage.removeItem("azure-ad-encryption-key")
+    }
+  }
+
+  // Client-side AES decryption using Web Crypto API with master key from Key Vault
+  const clientSideDecryptWithMasterKey = async (encryptedText: string, masterKey: string): Promise<string> => {
+    try {
+      // Extract encrypted content (everything after the SOPS header)
+      const lines = encryptedText.split('\n')
+      let encryptedDataStart = -1
+      
+      // Find where the actual encrypted content starts (after SOPS metadata)
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].startsWith('-----BEGIN ENCRYPTED CONTENT-----')) {
+          encryptedDataStart = i + 1
+          break
+        }
+        // Fallback: look for base64-like content after sops metadata
+        if (lines[i].match(/^[A-Za-z0-9+/]+=*$/) && lines[i].length > 50) {
+          encryptedDataStart = i
+          break
+        }
+      }
+      
+      if (encryptedDataStart === -1) {
+        throw new Error("Could not find encrypted content in file")
+      }
+      
+      // Get the encrypted data (join lines until end marker or end of file)
+      let encryptedDataEnd = lines.length
+      for (let i = encryptedDataStart; i < lines.length; i++) {
+        if (lines[i].startsWith('-----END ENCRYPTED CONTENT-----')) {
+          encryptedDataEnd = i
+          break
+        }
+      }
+      
+      const encryptedBase64 = lines.slice(encryptedDataStart, encryptedDataEnd).join('')
+      
+      // Decode base64
+      const encryptedData = Uint8Array.from(atob(encryptedBase64), c => c.charCodeAt(0))
+      
+      // Extract IV (first 16 bytes) and ciphertext (rest)
+      const iv = encryptedData.slice(0, 16)
+      const ciphertext = encryptedData.slice(16)
+      
+      // Derive key from master key using PBKDF2 (same method as content encryption)
+      const encoder = new TextEncoder()
+      const masterKeyBuffer = encoder.encode(masterKey)
+      const salt = encoder.encode("knowledge-base-salt") // Same salt as encryption
+      
+      const keyMaterial = await crypto.subtle.importKey(
+        "raw",
+        masterKeyBuffer,
+        { name: "PBKDF2" },
+        false,
+        ["deriveBits", "deriveKey"]
+      )
+      
+      const derivedKey = await crypto.subtle.deriveKey(
+        {
+          name: "PBKDF2",
+          salt: salt,
+          iterations: 100000,
+          hash: "SHA-256"
+        },
+        keyMaterial,
+        { name: "AES-CBC", length: 256 },
+        false,
+        ["decrypt"]
+      )
+      
+      // Decrypt the content
+      const decryptedBuffer = await crypto.subtle.decrypt(
+        {
+          name: "AES-CBC",
+          iv: iv
+        },
+        derivedKey,
+        ciphertext
+      )
+      
+      // Convert back to text
+      const decoder = new TextDecoder()
+      return decoder.decode(decryptedBuffer)
+      
+    } catch (error) {
+      console.error("Decryption with master key failed:", error)
+      throw new Error("Failed to decrypt content with master key.")
     }
   }
 
