@@ -139,7 +139,6 @@ AuthStatus.afterDOMLoaded = `
 // Authentication management for Azure Static Web Apps
 let currentUser = null;
 let isAuthenticated = false;
-let userEncryptionKey = null;
 
 // UI Elements
 const userInfo = document.getElementById('userInfo');
@@ -147,58 +146,10 @@ const loginBtn = document.getElementById('loginBtn');
 const logoutBtn = document.getElementById('logoutBtn');
 const authStatus = document.getElementById('authStatus');
 
-// Fetch master encryption key from Azure Key Vault
-async function fetchMasterEncryptionKey(user) {
-  if (!user || !user.userId) {
-    console.warn('Cannot fetch encryption key: no user available');
-    return null;
-  }
-  
-  try {
-    console.log('🔑 Fetching master encryption key from Azure Key Vault...');
-    
-    const response = await fetch('/api/get-encryption-key', {
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      credentials: 'include' // Include authentication cookies
-    });
-    
-    if (!response.ok) {
-      if (response.status === 401) {
-        console.warn('Authentication required for encryption key access');
-        return null;
-      } else if (response.status === 403) {
-        console.warn('Access denied to encryption key');
-        return null;
-      } else {
-        throw new Error(\`HTTP \${response.status}: \${response.statusText}\`);
-      }
-    }
-    
-    const data = await response.json();
-    
-    if (!data.success || !data.encryptionKey) {
-      throw new Error('Invalid response format from key service');
-    }
-    
-    console.log('✅ Master encryption key retrieved from Azure Key Vault');
-    console.log(\`🔐 Key ID: \${data.keyId}\`);
-    
-    return data.encryptionKey;
-    
-  } catch (error) {
-    console.error('Error fetching master encryption key:', error);
-    return null;
-  }
-}
-
-function clearUserEncryptionKey() {
-  userEncryptionKey = null;
+// Clear any legacy encryption keys from localStorage
+function clearLegacyKeys() {
   localStorage.removeItem('azure-ad-encryption-key');
-  localStorage.removeItem('knowledge-base-key'); // Clear legacy key
-  console.log('🔐 User encryption key cleared');
+  localStorage.removeItem('knowledge-base-key');
 }
 
 // Check authentication status
@@ -218,22 +169,15 @@ async function checkAuthStatus() {
     if (clientPrincipal) {
       currentUser = clientPrincipal;
       isAuthenticated = true;
-      
-      // Fetch master encryption key from Azure Key Vault
-      userEncryptionKey = await fetchMasterEncryptionKey(clientPrincipal);
-      if (userEncryptionKey) {
-        localStorage.setItem('azure-ad-encryption-key', userEncryptionKey);
-      }
-      
       displayAuthenticatedState();
     } else {
       isAuthenticated = false;
-      clearUserEncryptionKey();
+      clearLegacyKeys();
       displayUnauthenticatedState();
     }
   } catch (error) {
     console.error('Error checking auth status:', error);
-    clearUserEncryptionKey();
+    clearLegacyKeys();
     displayUnauthenticatedState();
   }
 }
@@ -243,14 +187,11 @@ function displayAuthenticatedState() {
     authStatus.className = 'auth-status authenticated';
   }
   
-  const encryptionStatus = userEncryptionKey ? '🔓 Encryption Ready' : '⚠️ Encryption Unavailable';
-  
   if (userInfo) {
     userInfo.innerHTML = \`
       <p><strong>✅ Authenticated</strong></p>
       <p>Welcome, \${currentUser.userDetails || 'User'}!</p>
       <p>Provider: \${currentUser.identityProvider}</p>
-      <p><small>\${encryptionStatus}</small></p>
     \`;
   }
   
@@ -291,8 +232,8 @@ if (loginBtn) {
 
 if (logoutBtn) {
   logoutBtn.addEventListener('click', function() {
-    // Clear encryption keys before logout
-    clearUserEncryptionKey();
+    // Clear any legacy keys before logout
+    clearLegacyKeys();
     window.location.href = '/.auth/logout';
   });
 }

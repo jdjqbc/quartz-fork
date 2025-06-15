@@ -24,7 +24,6 @@ import Comments from "./Comments"
 import Flex from "./Flex"
 import ConditionalRender from "./ConditionalRender"
 import AuthStatus from "./AuthStatus"
-import EncryptedContent from "./EncryptedContent"
 
 export {
   ArticleTitle,
@@ -53,5 +52,4 @@ export {
   Flex,
   ConditionalRender,
   AuthStatus,
-  EncryptedContent,
 }
